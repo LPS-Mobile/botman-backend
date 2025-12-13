@@ -1,9 +1,17 @@
-fastapi==0.104.1
-uvicorn[standard]==0.24.0
-pandas==2.1.3
-pandas-ta==0.3.14b0
-numpy==1.26.2
-matplotlib==3.8.2
-databento==0.20.0
-python-dotenv==1.0.0
-pydantic==2.5.0
+# Core App Framework
+fastapi>=0.104.1
+uvicorn[standard]>=0.24.0
+python-dotenv>=1.0.0
+pydantic>=2.5.0
+
+# Data & Math (Compatible versions)
+numpy>=1.26.0
+pandas>=2.1.3
+pandas-ta
+matplotlib>=3.8.0
+
+# Data Provider
+databento>=0.20.0
+
+# Web Server for Render
+gunicorn
