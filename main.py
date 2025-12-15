@@ -9,15 +9,10 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 from functools import lru_cache
-from dotenv import load_dotenv  # [ADDED] Import dotenv
+from dotenv import load_dotenv # [KEEPING PREVIOUS CHANGE]
 
 # --- 1. CONFIGURATION ---
-# Load variables from .env file into os.environ
-load_dotenv()
-
-# Verify the key is loaded (Optional Debugging)
-if not os.getenv("DATABENTO_API_KEY"):
-    print("⚠️ WARNING: DATABENTO_API_KEY not found. Please check your .env file.")
+load_dotenv() # Load .env variables
 
 # --- IMPORTS ---
 try:
@@ -36,7 +31,7 @@ try:
 except ImportError:
     DataLoader = None
 
-app = FastAPI(title="AI Backtest Engine API", version="2.5.0")
+app = FastAPI(title="AI Backtest Engine API", version="2.5.1")
 
 app.add_middleware(
     CORSMiddleware,
@@ -70,7 +65,7 @@ class ManualStrategyRequest(BaseModel):
     stop_loss_pct: float = 0.02
     take_profit_pct: float = 0.04
 
-# --- 3. CACHED DATA LOADING ---
+# --- 3. HELPER FUNCTIONS (Including Drawdown) ---
 
 def get_smart_dates(start_str: str, end_str: str, timeframe: str) -> tuple:
     start = pd.to_datetime(start_str)
@@ -91,7 +86,6 @@ def fetch_cached_data(symbol: str, start_str: str, end_str: str, timeframe: str)
     print(f"📥 [CACHE MISS] Fetching Real Data from Source: {symbol}...")
     if DataLoader:
         try:
-            # DataLoader likely reads os.environ['DATABENTO_API_KEY'] internally
             loader = DataLoader()
             return loader.load_data(symbol, start_str, end_str, timeframe)
         except Exception as e:
@@ -133,6 +127,38 @@ def get_mock_data(symbol, start, end, timeframe):
         'volume': np.random.randint(1000, 100000, len(dates))
     }, index=dates)
 
+# [ADDED] Helper to calculate Drawdown Series from Equity Curve
+def calculate_drawdown_series(equity_curve: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Takes equity curve: [{'time': '2023-01-01', 'value': 10000}, ...]
+    Returns drawdown chart: [{'time': '2023-01-01', 'value': -0.05}, ...]
+    """
+    if not equity_curve:
+        return []
+    
+    try:
+        df = pd.DataFrame(equity_curve)
+        if 'value' not in df.columns or 'time' not in df.columns:
+            return []
+
+        # Calculate Running Peak
+        df['peak'] = df['value'].cummax()
+        
+        # Calculate Drawdown % ((Value - Peak) / Peak)
+        df['drawdown'] = (df['value'] - df['peak']) / df['peak']
+        
+        # Replace NaNs with 0 (start of chart)
+        df['drawdown'] = df['drawdown'].fillna(0)
+
+        # Format for frontend (Percentage: -5.23)
+        return [
+            {"time": t, "value": round(d * 100, 2)}
+            for t, d in zip(df['time'], df['drawdown'])
+        ]
+    except Exception as e:
+        print(f"⚠️ Error calculating drawdown chart: {e}")
+        return []
+
 # --- 4. API ROUTES ---
 
 @app.post("/api/backtest/professional")
@@ -155,7 +181,13 @@ def run_professional_backtest(req: ManualStrategyRequest):
         }
 
         engine = ProfessionalBacktestEngine(df, req.initial_capital)
-        return engine.run(config)
+        results = engine.run(config)
+        
+        # [RESTORED] Calculate Drawdown Chart
+        if "equity_curve" in results:
+            results["drawdown_chart"] = calculate_drawdown_series(results["equity_curve"])
+            
+        return results
 
     except Exception as e:
         traceback.print_exc()
@@ -166,13 +198,6 @@ def run_ai_backtest(req: AIStrategyRequest):
     try:
         print("\n" + "="*60)
         print(f"🤖 AI BACKTEST REQUEST: {req.symbol}")
-        print("-" * 30)
-        
-        # --- DEBUG: PRINT EXACTLY WHAT OPENAI SENT ---
-        print("📥 INCOMING JSON PAYLOAD:")
-        print(json.dumps(req.strategy, indent=2)) 
-        print("-" * 30)
-        # ---------------------------------------------
         
         # 1. Translate / Prepare Config
         if 'entry' in req.strategy or 'logic' in req.strategy:
@@ -185,8 +210,7 @@ def run_ai_backtest(req: AIStrategyRequest):
 
         # 2. Load Data (Cached)
         df = load_market_data(req.symbol, req.start_date, req.end_date, req.timeframe)
-        print(f"📊 Processing {len(df)} bars")
-
+        
         # 3. Check Data Integrity
         if len(df) < 50:
              raise HTTPException(status_code=400, detail="Insufficient data for this timeframe/range.")
@@ -196,6 +220,11 @@ def run_ai_backtest(req: AIStrategyRequest):
         results = engine.run(config)
         
         results['aiStrategy'] = {'name': req.strategy.get('name', 'AI Strategy')}
+        
+        # [RESTORED] Calculate Drawdown Chart
+        if "equity_curve" in results:
+            results["drawdown_chart"] = calculate_drawdown_series(results["equity_curve"])
+            
         return results
 
     except Exception as e:
