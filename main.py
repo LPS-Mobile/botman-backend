@@ -9,7 +9,7 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 from functools import lru_cache
-from dotenv import load_dotenv # [KEEPING PREVIOUS CHANGE]
+from dotenv import load_dotenv
 
 # --- 1. CONFIGURATION ---
 load_dotenv() # Load .env variables
@@ -33,9 +33,14 @@ except ImportError:
 
 app = FastAPI(title="AI Backtest Engine API", version="2.5.1")
 
+# --- UPDATED CORS CONFIGURATION ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "https://bma-lps-mobile.vercel.app", 
+        "http://localhost:3000"
+    ],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -65,7 +70,7 @@ class ManualStrategyRequest(BaseModel):
     stop_loss_pct: float = 0.02
     take_profit_pct: float = 0.04
 
-# --- 3. HELPER FUNCTIONS (Including Drawdown) ---
+# --- 3. HELPER FUNCTIONS ---
 
 def get_smart_dates(start_str: str, end_str: str, timeframe: str) -> tuple:
     start = pd.to_datetime(start_str)
@@ -127,12 +132,7 @@ def get_mock_data(symbol, start, end, timeframe):
         'volume': np.random.randint(1000, 100000, len(dates))
     }, index=dates)
 
-# [ADDED] Helper to calculate Drawdown Series from Equity Curve
 def calculate_drawdown_series(equity_curve: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """
-    Takes equity curve: [{'time': '2023-01-01', 'value': 10000}, ...]
-    Returns drawdown chart: [{'time': '2023-01-01', 'value': -0.05}, ...]
-    """
     if not equity_curve:
         return []
     
@@ -141,16 +141,10 @@ def calculate_drawdown_series(equity_curve: List[Dict[str, Any]]) -> List[Dict[s
         if 'value' not in df.columns or 'time' not in df.columns:
             return []
 
-        # Calculate Running Peak
         df['peak'] = df['value'].cummax()
-        
-        # Calculate Drawdown % ((Value - Peak) / Peak)
         df['drawdown'] = (df['value'] - df['peak']) / df['peak']
-        
-        # Replace NaNs with 0 (start of chart)
         df['drawdown'] = df['drawdown'].fillna(0)
 
-        # Format for frontend (Percentage: -5.23)
         return [
             {"time": t, "value": round(d * 100, 2)}
             for t, d in zip(df['time'], df['drawdown'])
@@ -180,14 +174,16 @@ def run_professional_backtest(req: ManualStrategyRequest):
             "take_profit_pct": req.take_profit_pct
         }
 
-        engine = ProfessionalBacktestEngine(df, req.initial_capital)
-        results = engine.run(config)
-        
-        # [RESTORED] Calculate Drawdown Chart
-        if "equity_curve" in results:
-            results["drawdown_chart"] = calculate_drawdown_series(results["equity_curve"])
+        if ProfessionalBacktestEngine:
+            engine = ProfessionalBacktestEngine(df, req.initial_capital)
+            results = engine.run(config)
             
-        return results
+            if "equity_curve" in results:
+                results["drawdown_chart"] = calculate_drawdown_series(results["equity_curve"])
+                
+            return results
+        else:
+            raise HTTPException(status_code=500, detail="Backtest Engine not initialized.")
 
     except Exception as e:
         traceback.print_exc()
@@ -199,7 +195,6 @@ def run_ai_backtest(req: AIStrategyRequest):
         print("\n" + "="*60)
         print(f"🤖 AI BACKTEST REQUEST: {req.symbol}")
         
-        # 1. Translate / Prepare Config
         if 'entry' in req.strategy or 'logic' in req.strategy:
             config = req.strategy
         else:
@@ -208,24 +203,23 @@ def run_ai_backtest(req: AIStrategyRequest):
             else:
                 config = req.strategy
 
-        # 2. Load Data (Cached)
         df = load_market_data(req.symbol, req.start_date, req.end_date, req.timeframe)
         
-        # 3. Check Data Integrity
         if len(df) < 50:
              raise HTTPException(status_code=400, detail="Insufficient data for this timeframe/range.")
 
-        # 4. Run
-        engine = ProfessionalBacktestEngine(df, req.initial_capital)
-        results = engine.run(config)
-        
-        results['aiStrategy'] = {'name': req.strategy.get('name', 'AI Strategy')}
-        
-        # [RESTORED] Calculate Drawdown Chart
-        if "equity_curve" in results:
-            results["drawdown_chart"] = calculate_drawdown_series(results["equity_curve"])
+        if ProfessionalBacktestEngine:
+            engine = ProfessionalBacktestEngine(df, req.initial_capital)
+            results = engine.run(config)
             
-        return results
+            results['aiStrategy'] = {'name': req.strategy.get('name', 'AI Strategy')}
+            
+            if "equity_curve" in results:
+                results["drawdown_chart"] = calculate_drawdown_series(results["equity_curve"])
+                
+            return results
+        else:
+            raise HTTPException(status_code=500, detail="Backtest Engine not initialized.")
 
     except Exception as e:
         traceback.print_exc()
@@ -233,4 +227,6 @@ def run_ai_backtest(req: AIStrategyRequest):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # Use environment variable for port if available (standard for Render)
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
