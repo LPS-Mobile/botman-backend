@@ -78,7 +78,9 @@ class ProfessionalBacktestEngine:
         
         df['signal'] = 0
         # Entry signal on the first bar where all conditions are met
-        df.loc[master & ~master.shift(1).fillna(False), 'signal'] = 1
+        # Use logical negation to avoid Python 3.13+ deprecation warning
+        prev_master = master.shift(1).fillna(False)
+        df.loc[master & (prev_master == False), 'signal'] = 1
         print(f"🔍 Engine Logic: {master.sum()} bars met conditions")
         return df
 
