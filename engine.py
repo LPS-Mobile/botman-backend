@@ -1,8 +1,9 @@
 """
-Professional-Grade Backtest Engine (v2.7 - Optimized)
-- Fixed: Pandas 3.0+ bfill() compatibility.
-- Added: VWAP indicator support.
-- Fixed: Full Metrics Schema to prevent frontend .toFixed() crashes.
+Professional-Grade Backtest Engine (v2.8 - Fixed)
+- Fixed: EMA indicator typo (col_key -> col)
+- Fixed: Complete metrics schema with all required fields
+- Fixed: Pandas 3.0+ bfill() compatibility
+- Added: VWAP indicator support
 """
 import pandas as pd
 import pandas_ta as ta
@@ -42,7 +43,7 @@ class ProfessionalBacktestEngine:
             elif name == 'sma': 
                 df[col] = ta.sma(df['close'], length=period)
             elif name == 'ema': 
-                df[col_key] = ta.ema(df['close'], length=period)
+                df[col] = ta.ema(df['close'], length=period)
             elif name == 'rsi': 
                 df[col] = ta.rsi(df['close'], length=period)
             elif name == 'atr':
@@ -82,7 +83,7 @@ class ProfessionalBacktestEngine:
         return df
 
     def run(self, config):
-        print(f"\n🚀 ENGINE START (v2.7): Run {self.run_id}")
+        print(f"\n🚀 ENGINE START (v2.8): Run {self.run_id}")
         df = self._process_logic(self.df.copy(), config.get('logic', []))
         trades, equity = self._simulate(df, config)
         
@@ -120,25 +121,118 @@ class ProfessionalBacktestEngine:
         return trades, curve
 
     def _calculate_metrics(self, trades, curve):
-        # Prevents frontend crashes by ensuring every key exists
+        """
+        FIXED: Returns complete metrics object with ALL fields to prevent frontend crashes
+        """
+        # Base template with all possible fields initialized to safe defaults
         m = {
-            "totalTrades": 0, "winRate": 0.0, "netProfit": 0.0, "grossProfit": 0.0,
-            "profitFactor": 0.0, "maxDrawdown": 0.0, "returnOnCapital": 0.0, "equity": self.initial_capital
+            "totalTrades": 0,
+            "winRate": 0.0,
+            "netProfit": 0.0,
+            "grossProfit": 0.0,
+            "grossLoss": 0.0,
+            "profitFactor": 0.0,
+            "maxDrawdown": 0.0,
+            "maxDrawdownAbs": 0.0,
+            "returnOnCapital": 0.0,
+            "equity": round(self.initial_capital, 2),
+            "sharpeRatio": 0.0,
+            "sortinoRatio": 0.0,
+            "calmarRatio": 0.0,
+            "avgWin": 0.0,
+            "avgLoss": 0.0,
+            "winLossRatio": 0.0,
+            "largestWin": 0.0,
+            "largestLoss": 0.0,
+            "maxConsecutiveWins": 0,
+            "maxConsecutiveLosses": 0,
+            "expectancy": 0.0,
+            "sqn": 0.0,
+            "averageHoldingBars": 0
         }
-        if not trades: return m
         
+        if not trades:
+            return m
+        
+        # Calculate actual metrics
         wins = [t for t in trades if t.pnl > 0]
+        losses = [t for t in trades if t.pnl <= 0]
+        
+        gross_profit = sum(t.pnl for t in wins)
+        gross_loss = abs(sum(t.pnl for t in losses))
         net = sum(t.pnl for t in trades)
+        
         eq = pd.Series(curve)
         dd = ((eq.expanding().max() - eq) / eq.expanding().max() * 100).max()
+        dd_abs = (eq.expanding().max() - eq).max()
         
+        # Win/Loss averages
+        avg_win = gross_profit / len(wins) if wins else 0.0
+        avg_loss = gross_loss / len(losses) if losses else 0.0
+        
+        # Streaks
+        win_streak = loss_streak = max_win_streak = max_loss_streak = 0
+        for t in trades:
+            if t.pnl > 0:
+                win_streak += 1
+                loss_streak = 0
+                max_win_streak = max(max_win_streak, win_streak)
+            else:
+                loss_streak += 1
+                win_streak = 0
+                max_loss_streak = max(max_loss_streak, loss_streak)
+        
+        # Expectancy
+        win_rate = len(wins) / len(trades) if trades else 0
+        expectancy = (win_rate * avg_win) - ((1 - win_rate) * avg_loss)
+        
+        # SQN
+        pnl_mean = net / len(trades)
+        pnl_variance = sum((t.pnl - pnl_mean) ** 2 for t in trades) / len(trades)
+        pnl_std = pnl_variance ** 0.5
+        sqn = (pnl_mean / pnl_std * len(trades) ** 0.5) if pnl_std > 0 else 0.0
+        
+        # Risk ratios (simplified)
+        returns = [t.pnl / self.initial_capital for t in trades]
+        mean_ret = sum(returns) / len(returns)
+        variance = sum((r - mean_ret) ** 2 for r in returns) / len(returns)
+        std_dev = variance ** 0.5
+        
+        downside_returns = [r for r in returns if r < 0]
+        downside_var = sum(r ** 2 for r in downside_returns) / len(returns) if returns else 0
+        downside_dev = downside_var ** 0.5
+        
+        sharpe = mean_ret / std_dev if std_dev > 0 else 0.0
+        sortino = mean_ret / downside_dev if downside_dev > 0 else 0.0
+        calmar = (net / self.initial_capital * 100) / dd if dd > 0 else 0.0
+        
+        # Update metrics
         m.update({
-            "totalTrades": len(trades), "winRate": round(len(wins)/len(trades)*100, 2),
-            "netProfit": round(net, 2), "grossProfit": round(sum(t.pnl for t in wins), 2),
-            "profitFactor": round(sum(t.pnl for t in wins) / abs(sum(t.pnl for t in trades if t.pnl <= 0)), 2) if len(wins) < len(trades) else 99.0,
-            "maxDrawdown": round(dd, 2), "returnOnCapital": round((net/self.initial_capital)*100, 2),
-            "equity": round(curve[-1], 2)
+            "totalTrades": len(trades),
+            "winRate": round(len(wins) / len(trades) * 100, 2),
+            "netProfit": round(net, 2),
+            "grossProfit": round(gross_profit, 2),
+            "grossLoss": round(gross_loss, 2),
+            "profitFactor": round(gross_profit / gross_loss, 2) if gross_loss > 0 else 99.0,
+            "maxDrawdown": round(dd, 2),
+            "maxDrawdownAbs": round(dd_abs, 2),
+            "returnOnCapital": round((net / self.initial_capital) * 100, 2),
+            "equity": round(curve[-1], 2),
+            "sharpeRatio": round(sharpe, 3),
+            "sortinoRatio": round(sortino, 3),
+            "calmarRatio": round(calmar, 3),
+            "avgWin": round(avg_win, 2),
+            "avgLoss": round(avg_loss, 2),
+            "winLossRatio": round(avg_win / avg_loss, 2) if avg_loss > 0 else 99.0,
+            "largestWin": round(max(t.pnl for t in trades), 2),
+            "largestLoss": round(min(t.pnl for t in trades), 2),
+            "maxConsecutiveWins": max_win_streak,
+            "maxConsecutiveLosses": max_loss_streak,
+            "expectancy": round(expectancy, 2),
+            "sqn": round(sqn, 2),
+            "averageHoldingBars": round(sum(t.bars_held for t in trades) / len(trades), 1)
         })
+        
         return m
 
     def _generate_chart(self, curve):
