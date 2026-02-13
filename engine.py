@@ -1,5 +1,5 @@
 """
-Professional-Grade Backtest Engine (v2.2 - Full Metrics)
+Professional-Grade Backtest Engine (v2.3 - Enhanced Debugging)
 Matches the React Frontend 'BacktestMetrics' component exactly.
 """
 
@@ -89,7 +89,7 @@ class ProfessionalBacktestEngine:
                  risk_per_trade: float = 0.01):
         
         self.df = data.copy(deep=True)
-        # Standardize columns to lowercase for consistency
+        # Normalize columns to lowercase for consistency across data sources
         self.df.columns = [c.lower() for c in self.df.columns]
         self.initial_capital = initial_capital
         self.risk_manager = RiskManager(initial_capital, risk_per_trade)
@@ -103,14 +103,14 @@ class ProfessionalBacktestEngine:
             "trailing_stop_pct": 0.0
         }
 
-        # Handle Logic (Entry Conditions)
+        # Resolve logic conditions from various possible frontend naming conventions
         conditions = raw_config.get('entry', raw_config.get('conditions', raw_config.get('logic', [])))
         if conditions and isinstance(conditions, list) and len(conditions) > 0:
             if isinstance(conditions[0], dict) and 'conditions' in conditions[0]:
                  conditions = conditions[0]['conditions']
         norm['logic'] = conditions
 
-        # Handle Risk Parameters
+        # Standardize Risk Parameters
         if 'stopLoss' in raw_config and isinstance(raw_config['stopLoss'], dict):
             norm['stop_loss_pct'] = float(raw_config['stopLoss'].get('value', 0.02))
         elif 'stop_loss_pct' in raw_config:
@@ -129,18 +129,18 @@ class ProfessionalBacktestEngine:
         
         df = self.df.copy()
 
-        # Step 1: Calculate Indicators & Signals
+        # Step 1: Process Signals
         if config['logic']:
             df = self._process_dynamic_logic(df, config['logic'])
         else:
-            print("⚠️ No logic found in config, skipping signal generation.")
+            print("⚠️ Engine Logic: No conditions provided. Skipping.")
             df['signal'] = 0
             
-        # Step 2: Execute Trades
+        # Step 2: Execute Simulation
         trades, equity_curve = self._execute_strategy(df, config)
-        print(f"✅ Executed {len(trades)} trades")
+        print(f"✅ Simulation Complete: {len(trades)} trades executed.")
         
-        # Step 3: Calculate Full Metrics
+        # Step 3: Package Results
         metrics = self._calculate_metrics(trades, equity_curve)
         chart = self._generate_chart(df, equity_curve)
         
@@ -153,49 +153,59 @@ class ProfessionalBacktestEngine:
 
     def _resolve_operand(self, df: pd.DataFrame, operand: Any) -> pd.Series:
         if isinstance(operand, (int, float)):
-            return pd.Series(operand, index=df.index)
+            return pd.Series(float(operand), index=df.index)
         
         if isinstance(operand, dict):
             otype = operand.get('type', 'value')
             if otype == 'value':
-                return pd.Series(operand.get('value', 0), index=df.index)
+                return pd.Series(float(operand.get('value', 0)), index=df.index)
             
             if otype == 'indicator':
-                name = operand.get('name', '').lower()
+                name = str(operand.get('name', '')).lower().strip()
                 params = operand.get('params', [])
-                period = int(params[0]) if params else 14
+                try:
+                    period = int(params[0]) if params else 14
+                except:
+                    period = 14
                 
                 col_key = f"{name}_{period}"
                 
-                # Check if already calculated
-                if col_key in df.columns: return df[col_key]
+                # Check cache
+                if col_key in df.columns: 
+                    return df[col_key]
                 
-                # Common price indicators
-                if name in ['price', 'close']: return df['close']
-                elif name == 'rsi': 
-                    df[col_key] = ta.rsi(df['close'], length=period)
-                elif name == 'sma': 
-                    df[col_key] = ta.sma(df['close'], length=period)
-                elif name == 'ema': 
-                    df[col_key] = ta.ema(df['close'], length=period)
-                elif name == 'atr': 
-                    df[col_key] = ta.atr(df['high'], df['low'], df['close'], length=period)
-                else:
-                    return pd.Series(0, index=df.index)
+                # Calculation Block
+                try:
+                    if name in ['price', 'close']: 
+                        return df['close']
+                    elif name == 'rsi': 
+                        df[col_key] = ta.rsi(df['close'], length=period)
+                    elif name == 'sma': 
+                        df[col_key] = ta.sma(df['close'], length=period)
+                    elif name == 'ema': 
+                        df[col_key] = ta.ema(df['close'], length=period)
+                    elif name == 'atr': 
+                        df[col_key] = ta.atr(df['high'], df['low'], df['close'], length=period)
+                    
+                    if col_key in df.columns:
+                        # Warm-up periods return NaN; fill with 0 to allow comparison math
+                        return df[col_key].fillna(0)
+                except Exception as e:
+                    print(f"⚠️ Indicator Error ({name}): {e}")
                 
-                return df[col_key].fillna(0) # Fill NaNs to prevent logic breaks
-
-        return pd.Series(0, index=df.index)
+        return pd.Series(0.0, index=df.index)
 
     def _process_dynamic_logic(self, df: pd.DataFrame, conditions: List[Dict]) -> pd.DataFrame:
         master_condition = pd.Series(True, index=df.index)
         
-        for cond in conditions:
+        for i, cond in enumerate(conditions):
             left = self._resolve_operand(df, cond.get('left'))
             right = self._resolve_operand(df, cond.get('right'))
             op = cond.get('type', 'greaterThan')
             
-            # Enhanced Logic for Crossovers vs Inequalities
+            # Debug values for the most recent data point
+            print(f"  [Condition {i}] Op: {op} | L: {round(left.iloc[-1], 2)} | R: {round(right.iloc[-1], 2)}")
+
             if op == 'crossesAbove':
                 res = (left > right) & (left.shift(1) <= right.shift(1))
             elif op == 'crossesBelow':
@@ -211,12 +221,11 @@ class ProfessionalBacktestEngine:
                 
             master_condition = master_condition & res
 
-        # Debugging: check if any signals were even possible
         valid_bars = master_condition.sum()
-        print(f"🔍 Logic Debug: {valid_bars} bars met your entry conditions.")
+        print(f"🔍 Logic Debug: {valid_bars} bars met all entry conditions.")
 
         df['signal'] = 0
-        # Trigger signal only on the first instance the condition becomes True
+        # Only trigger entry on the FIRST bar the condition set becomes True
         df.loc[master_condition & ~master_condition.shift(1).fillna(False), 'signal'] = 1
         return df
 
@@ -232,27 +241,27 @@ class ProfessionalBacktestEngine:
 
         for i in range(len(df)):
             price = df['close'].iloc[i]
+            low = df['low'].iloc[i]
+            high = df['high'].iloc[i]
             date = df.index[i]
             
-            # Calculate Equity Curve
+            # 1. Update Equity
             current_val = equity
             if position:
                 unrealized = (price - position.entry_price) * position.size
                 current_val += unrealized
             equity_curve.append(current_val)
 
-            # 1. Manage Existing Position
+            # 2. Check Exits
             if position:
                 position.bars_held += 1
                 exit_price = None
                 reason = None
                 
-                # Check Stop Loss
-                if df['low'].iloc[i] <= position.stop_loss:
+                if low <= position.stop_loss:
                     exit_price = position.stop_loss
                     reason = ExitReason.STOP_LOSS
-                # Check Take Profit
-                elif df['high'].iloc[i] >= position.take_profit:
+                elif high >= position.take_profit:
                     exit_price = position.take_profit
                     reason = ExitReason.TAKE_PROFIT
                 
@@ -271,7 +280,7 @@ class ProfessionalBacktestEngine:
                     position = None
                     trade_count += 1
             
-            # 2. Check for New Entry
+            # 3. Check Entry
             elif df['signal'].iloc[i] == 1:
                 sl_price = price * (1 - sl_pct)
                 size = self.risk_manager.calculate_position_size(equity, price, sl_price)
@@ -286,30 +295,28 @@ class ProfessionalBacktestEngine:
         return trades, equity_curve
 
     def _calculate_metrics(self, trades: List[Trade], equity_curve: List[float]) -> Dict:
-        empty = {
+        empty_metrics = {
             "totalTrades": 0, "winRate": 0, "netProfit": 0, "grossProfit": 0, 
-            "profitFactor": 0, "expectancy": 0, "sqn": 0, "sharpeRatio": 0, 
-            "maxDrawdown": 0, "returnOnCapital": 0, "equity": self.initial_capital
+            "profitFactor": 0, "maxDrawdown": 0, "sharpeRatio": 0, 
+            "returnOnCapital": 0, "equity": self.initial_capital
         }
 
         if not trades:
-            return empty
+            return empty_metrics
 
         eq_series = pd.Series(equity_curve)
         wins = [t for t in trades if t.pnl > 0]
         losses = [t for t in trades if t.pnl <= 0]
         
-        gross_profit = sum(t.pnl for t in wins)
-        gross_loss = abs(sum(t.pnl for t in losses))
-        net_profit = gross_profit - gross_loss
+        net_profit = sum(t.pnl for t in trades)
         win_rate = (len(wins) / len(trades) * 100)
         
-        # Max Drawdown
+        # Max Drawdown Calculation
         peak = eq_series.expanding().max()
         dd_pct = ((peak - eq_series) / peak) * 100
         max_dd = dd_pct.max()
 
-        # Simple Sharpe (Annualized)
+        # Risk-adjusted Returns
         returns = eq_series.pct_change().dropna()
         sharpe = (returns.mean() / returns.std() * np.sqrt(252)) if returns.std() != 0 else 0
 
@@ -317,8 +324,8 @@ class ProfessionalBacktestEngine:
             "totalTrades": len(trades),
             "winRate": round(win_rate, 2),
             "netProfit": round(net_profit, 2),
-            "grossProfit": round(gross_profit, 2),
-            "profitFactor": round(gross_profit / gross_loss, 2) if gross_loss > 0 else 99,
+            "grossProfit": round(sum(t.pnl for t in wins), 2),
+            "profitFactor": round(sum(t.pnl for t in wins) / abs(sum(t.pnl for t in losses)), 2) if losses else 99,
             "maxDrawdown": round(max_dd, 2),
             "sharpeRatio": round(sharpe, 2),
             "returnOnCapital": round((net_profit / self.initial_capital) * 100, 2),
@@ -329,7 +336,7 @@ class ProfessionalBacktestEngine:
         plt.style.use('dark_background')
         fig, ax = plt.subplots(figsize=(10, 5))
         ax.plot(df.index, equity_curve, color='#10b981', linewidth=1.5)
-        ax.set_title("Equity Curve")
+        ax.set_title("Equity Performance")
         ax.grid(True, alpha=0.1)
         
         buf = io.BytesIO()
