@@ -35,6 +35,14 @@ class ProfessionalBacktestEngine:
 
     def _get_indicator(self, df, name, period):
         name = name.lower().strip()
+        
+        # Special case: volume doesn't need a period
+        if name == 'volume':
+            if 'volume' in df.columns:
+                return df['volume']
+            else:
+                return pd.Series(0.0, index=df.index)
+        
         col = f"{name}_{period}"
         if col in df.columns: return df[col]
         try:

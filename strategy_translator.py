@@ -1,5 +1,5 @@
 """
-Strategy Translator (v2.0 - Multi-Logic Support)
+Strategy Translator (v2.1 - Fixed Multi-Logic Support)
 Converts complex AI strategy JSON into the new "Logic Block" Engine Config
 CORRECTED VERSION - Fixed price detection and risk settings extraction
 """
@@ -20,7 +20,7 @@ class StrategyTranslator:
         Convert AI strategy to the new Multi-Logic Engine format
         """
         print("\n" + "="*60)
-        print("🔄 TRANSLATING STRATEGY (v2.0)")
+        print("🔄 TRANSLATING STRATEGY (v2.1)")
         print("="*60)
         print(f"Input strategy: {ai_strategy}")
 
@@ -76,7 +76,13 @@ class StrategyTranslator:
         if self._is_indicator(left) and right.get('type') == 'value':
             indicator_name = left.get('name', '').lower()
             params = left.get('params', [14])
-            period = params[0] if isinstance(params, list) and len(params) > 0 else 14
+            
+            # Special case: volume doesn't use a period
+            if indicator_name == 'volume':
+                period = 0  # No period for volume
+            else:
+                period = params[0] if isinstance(params, list) and len(params) > 0 else 14
+            
             value = right.get('value')
             
             # Skip if this is actually a price indicator
@@ -88,7 +94,10 @@ class StrategyTranslator:
                     "operator": operator,
                     "value": value
                 })
-                print(f"   🔍 Parsed: {indicator_name}({period}) {operator} {value}")
+                if indicator_name == 'volume':
+                    print(f"   🔍 Parsed: {indicator_name} {operator} {value}")
+                else:
+                    print(f"   🔍 Parsed: {indicator_name}({period}) {operator} {value}")
 
         # Case B: Price vs Indicator (e.g., Price > SMA)
         # This handles when left side is "price" and right side is an indicator
