@@ -93,16 +93,21 @@ class ProfessionalBacktestEngine:
         return df
 
     def run(self, config):
-        print(f"\n🚀 ENGINE START (v2.8): Run {self.run_id}")
+        print(f"\n🚀 ENGINE START (v2.9): Run {self.run_id}")
         df = self._process_logic(self.df.copy(), config.get('logic', []))
         trades, equity = self._simulate(df, config)
         
-        return {
+        chart_img = self._generate_chart(equity)
+        
+        result = {
             "runId": self.run_id, 
             "metrics": self._calculate_metrics(trades, equity), 
             "trades": [t.to_dict() for t in trades], 
-            "chartImage": f"data:image/png;base64,{self._generate_chart(equity)}"
+            "chartImage": chart_img
         }
+        
+        print(f"📦 Response includes chart: {bool(chart_img)}")
+        return result
 
     def _simulate(self, df, config):
         equity, pos, trades, curve = self.initial_capital, None, [], []
@@ -246,9 +251,34 @@ class ProfessionalBacktestEngine:
         return m
 
     def _generate_chart(self, curve):
-        plt.style.use('dark_background')
-        fig, ax = plt.subplots(figsize=(10, 5))
-        ax.plot(curve, color='#10b981', linewidth=1.5)
-        ax.set_title("Equity Performance")
-        buf = io.BytesIO(); plt.savefig(buf, format='png', bbox_inches='tight'); plt.close(fig)
-        return base64.b64encode(buf.read()).decode('utf-8')
+        try:
+            if not curve or len(curve) == 0:
+                print("⚠️  Warning: Empty equity curve, cannot generate chart")
+                return ""
+            
+            print(f"📊 Generating chart with {len(curve)} data points")
+            
+            plt.style.use('dark_background')
+            fig, ax = plt.subplots(figsize=(10, 5))
+            ax.plot(curve, color='#10b981', linewidth=1.5)
+            ax.set_title("Equity Performance", color='white')
+            ax.set_xlabel("Bar Index", color='white')
+            ax.set_ylabel("Equity ($)", color='white')
+            ax.grid(True, alpha=0.2)
+            
+            buf = io.BytesIO()
+            plt.savefig(buf, format='png', bbox_inches='tight', facecolor='#050505', dpi=100)
+            plt.close(fig)
+            buf.seek(0)
+            
+            img_bytes = buf.read()
+            img_base64 = base64.b64encode(img_bytes).decode('utf-8')
+            
+            print(f"✅ Chart generated: {len(img_base64)} chars")
+            
+            return f"data:image/png;base64,{img_base64}"
+        except Exception as e:
+            print(f"❌ Chart generation error: {e}")
+            import traceback
+            traceback.print_exc()
+            return ""
