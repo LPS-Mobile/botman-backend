@@ -31,7 +31,7 @@ try:
 except ImportError:
     DataLoader = None
 
-app = FastAPI(title="AI Backtest Engine API", version="2.5.1")
+app = FastAPI(title="AI Backtest Engine API", version="2.5.2")
 
 # --- UPDATED CORS CONFIGURATION ---
 app.add_middleware(
@@ -161,15 +161,18 @@ def run_professional_backtest(req: ManualStrategyRequest):
         print(f"\n🛠️ MANUAL BACKTEST: {req.symbol}")
         df = load_market_data(req.symbol, req.start_date, req.end_date, req.timeframe)
         
+        # Format this to match logic blocks expected by Engine v2.4
         config = {
             "strategy_name": f"Manual {req.indicator.upper()}",
-            "logic": [{
-                "type": "crossover", 
-                "indicator": req.indicator.lower(),
-                "period": req.period,
-                "buy_threshold": req.buy_threshold,
-                "sell_threshold": req.sell_threshold
-            }],
+            "logic": [
+                {
+                    "type": "threshold", 
+                    "indicator": req.indicator.lower(),
+                    "period": req.period,
+                    "operator": "<", # Example: Buying below a threshold
+                    "value": req.buy_threshold
+                }
+            ],
             "stop_loss_pct": req.stop_loss_pct,
             "take_profit_pct": req.take_profit_pct
         }
@@ -179,7 +182,9 @@ def run_professional_backtest(req: ManualStrategyRequest):
             results = engine.run(config)
             
             if "equity_curve" in results:
-                results["drawdown_chart"] = calculate_drawdown_series(results["equity_curve"])
+                # Format equity curve for drawdown calculator
+                formatted_curve = [{"time": str(df.index[i]), "value": v} for i, v in enumerate(results["equity_curve"])]
+                results["drawdown_chart"] = calculate_drawdown_series(formatted_curve)
                 
             return results
         else:
@@ -195,19 +200,23 @@ def run_ai_backtest(req: AIStrategyRequest):
         print("\n" + "="*60)
         print(f"🤖 AI BACKTEST REQUEST: {req.symbol}")
         
-        if 'entry' in req.strategy or 'logic' in req.strategy:
+        # 1. Translate strategy if it's the raw AI JSON format
+        if 'logic' in req.strategy:
             config = req.strategy
         else:
             if StrategyTranslator:
-                config = StrategyTranslator().translate(req.strategy)
+                translator = StrategyTranslator()
+                config = translator.translate(req.strategy)
             else:
                 config = req.strategy
 
+        # 2. Load Data
         df = load_market_data(req.symbol, req.start_date, req.end_date, req.timeframe)
         
         if len(df) < 50:
              raise HTTPException(status_code=400, detail="Insufficient data for this timeframe/range.")
 
+        # 3. Run Engine
         if ProfessionalBacktestEngine:
             engine = ProfessionalBacktestEngine(df, req.initial_capital)
             results = engine.run(config)
@@ -215,7 +224,9 @@ def run_ai_backtest(req: AIStrategyRequest):
             results['aiStrategy'] = {'name': req.strategy.get('name', 'AI Strategy')}
             
             if "equity_curve" in results:
-                results["drawdown_chart"] = calculate_drawdown_series(results["equity_curve"])
+                # Convert list of floats to list of dicts for the drawdown helper
+                formatted_curve = [{"time": str(df.index[i]), "value": v} for i, v in enumerate(results["equity_curve"])]
+                results["drawdown_chart"] = calculate_drawdown_series(formatted_curve)
                 
             return results
         else:
@@ -227,6 +238,5 @@ def run_ai_backtest(req: AIStrategyRequest):
 
 if __name__ == "__main__":
     import uvicorn
-    # Use environment variable for port if available (standard for Render)
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
